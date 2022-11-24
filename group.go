@@ -5,21 +5,22 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"time"
-
-	"github.com/hashicorp/go-multierror"
 )
 
-const defaultTerminationTimeout = 10 * time.Second
-
-type server struct {
-	server Server
-}
+var (
+	ErrAlreadyStarted     = errors.New("already started")
+	ErrTerminationTimeout = errors.New("termination timeout")
+)
 
 type Group struct {
-	mu struct {
+	serversMu struct {
 		sync.RWMutex
-		servers []*server
+		servers []Server
+	}
+
+	startedMu struct {
+		sync.RWMutex
+		started bool
 	}
 
 	termCh chan struct{}
@@ -27,118 +28,134 @@ type Group struct {
 }
 
 func (g *Group) Add(s Server) {
-	svr := &server{server: s}
+	g.startedMu.RLock()
+	if g.startedMu.started {
+		return
+	}
+	g.startedMu.RUnlock()
 
-	g.mu.Lock()
-	g.mu.servers = append(g.mu.servers, svr)
-	g.mu.Unlock()
+	g.serversMu.Lock()
+	g.serversMu.servers = append(g.serversMu.servers, s)
+	g.serversMu.Unlock()
 }
 
-func (g *Group) Start(ctx context.Context) error {
+func (g *Group) Start(ctx context.Context, opts ...Option) error {
+	g.startedMu.RLock()
+	if g.startedMu.started {
+		g.startedMu.RUnlock()
+		return ErrAlreadyStarted
+	}
+	g.startedMu.RUnlock()
+
+	g.startedMu.Lock()
+	g.startedMu.started = true
+	g.startedMu.Unlock()
+
+	opt := newOption(opts...)
+
 	ctx, cancel := context.WithCancel(ctx)
 
-	g.mu.RLock()
-	g.termCh = make(chan struct{}, len(g.mu.servers))
-	g.errChs = make([]chan error, len(g.mu.servers))
-	for i, s := range g.mu.servers {
-		i := i
-		s := s
-
+	g.serversMu.RLock()
+	g.termCh = make(chan struct{}, len(g.serversMu.servers))
+	g.errChs = make([]chan error, len(g.serversMu.servers))
+	for i, s := range g.serversMu.servers {
 		g.errChs[i] = make(chan error, 1)
 
-		go func() {
-			err := s.server.Start(ctx)
+		go func(i int, s Server) {
+			err := s.Start(ctx)
 			g.termCh <- struct{}{}
 			g.errChs[i] <- err
-		}()
+		}(i, s)
 	}
-	g.mu.RUnlock()
+	g.serversMu.RUnlock()
 
-	var errMessageStop string
-	var errMessageWait string
-
+	var aborted bool
 	select {
 	case <-ctx.Done():
-		errMessageStop = "failed to stop the servers due to: %w"
-		errMessageWait = "server group failed to terminate the servers due to: %w"
-
 	case <-g.termCh:
-		errMessageStop = "failed to stop servers when the servers have been aborted due to: %w"
-		errMessageWait = "server group aborted due to: %w"
+		aborted = true
 	}
 
 	cancel()
 
-	// TODO: make timeout duration customizable
-	termCtx, termCancel := context.WithTimeout(context.Background(), defaultTerminationTimeout)
+	termCtx, termCancel := context.WithTimeout(context.Background(), opt.terminationTimeout)
 	defer termCancel()
 
 	termErrCh := make(chan error, 1)
 
 	go func() {
 		if err := g.stop(termCtx); err != nil {
-			termErrCh <- fmt.Errorf(errMessageStop, err)
+			if aborted {
+				termErrCh <- fmt.Errorf("aborted: %w", err)
+			} else {
+				termErrCh <- fmt.Errorf("failed to stop servers: %w", err)
+			}
+
 			return
 		}
 
-		if err := g.wait(); err != nil {
-			termErrCh <- fmt.Errorf(errMessageWait, err)
-			return
-		}
-
-		termErrCh <- nil
+		close(termErrCh)
 	}()
 
 	select {
 	case <-termCtx.Done():
-		return errors.New("deadline exceeded for stopping the servers")
-	case err := <-termErrCh:
-		if err != nil {
-			return fmt.Errorf("failed to terminate the servers: %w", err)
+		return ErrTerminationTimeout
+	case err, ok := <-termErrCh:
+		if ok && err != nil {
+			return err
 		}
 		return nil
 	}
-}
-
-func (g *Group) wait() error {
-	eg := multierror.Group{}
-
-	for _, errCh := range g.errChs {
-		errCh := errCh
-		eg.Go(func() error {
-			return <-errCh
-		})
-	}
-
-	return eg.Wait().ErrorOrNil()
 }
 
 func (g *Group) stop(ctx context.Context) error {
-	g.mu.RLock()
+	g.serversMu.RLock()
 	var stoppers []Stopper
-	for _, s := range g.mu.servers {
-		if st, ok := s.server.(Stopper); ok {
-			stoppers = append(stoppers, st)
+	for _, s := range g.serversMu.servers {
+		if stopper, ok := s.(Stopper); ok {
+			stoppers = append(stoppers, stopper)
 		}
 	}
-	g.mu.RUnlock()
+	g.serversMu.RUnlock()
 
-	if len(stoppers) == 0 {
-		return nil
+	var errMu struct {
+		mu   sync.Mutex
+		errs []error
 	}
 
-	var eg multierror.Group
+	var wg sync.WaitGroup
 
 	for _, s := range stoppers {
-		s := s
-		eg.Go(func() error {
-			return s.Stop(ctx)
-		})
+		wg.Add(1)
+
+		go func(s Stopper) {
+			defer wg.Done()
+
+			err := s.Stop(ctx)
+
+			errMu.mu.Lock()
+			errMu.errs = append(errMu.errs, err)
+			errMu.mu.Unlock()
+		}(s)
 	}
 
-	if err := eg.Wait().ErrorOrNil(); err != nil {
-		return fmt.Errorf("failed to stop the servers: %w", err)
+	wg.Wait()
+
+	for _, errCh := range g.errChs {
+		wg.Add(1)
+
+		go func(errCh chan error) {
+			defer wg.Done()
+
+			err := <-errCh
+
+			errMu.mu.Lock()
+			errMu.errs = append(errMu.errs, err)
+			errMu.mu.Unlock()
+		}(errCh)
 	}
 
-	return nil
+	wg.Wait()
+
+	return joinErrors(errMu.errs...)
 }
