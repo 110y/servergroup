@@ -8,6 +8,7 @@ const defaultTerminationTimeout = 10 * time.Second
 
 var _ Option = (*funcOption)(nil)
 
+// Option controls how Group.Start behaves.
 type Option interface {
 	apply(*option)
 }
@@ -44,6 +45,7 @@ func newOption(opts ...Option) *option {
 	return o
 }
 
+// WithTerminationTimeout returns an Option that specifies the timeout duration for the termination.
 func WithTerminationTimeout(duration time.Duration) Option {
 	return newFuncOption(func(o *option) {
 		o.isTerminationTimeoutSet = true

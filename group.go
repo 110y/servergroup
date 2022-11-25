@@ -12,6 +12,7 @@ var (
 	ErrTerminationTimeout = errors.New("termination timeout")
 )
 
+// Group represents a group of servers.
 type Group struct {
 	serversMu struct {
 		sync.RWMutex
@@ -27,6 +28,8 @@ type Group struct {
 	errChs []chan error
 }
 
+// Add adds a server to the group.
+// If the group is already started, Add do nothing.
 func (g *Group) Add(s Server) {
 	g.startedMu.RLock()
 	if g.startedMu.started {
@@ -39,6 +42,9 @@ func (g *Group) Add(s Server) {
 	g.serversMu.Unlock()
 }
 
+// Start starts all servers in the group concurrently.
+// When the given context is canceled, Start waits for all servers to stop and returns an error if any of them failed.
+// If the group is already started, Start returns ErrAlreadyStarted.
 func (g *Group) Start(ctx context.Context, opts ...Option) error {
 	g.startedMu.RLock()
 	if g.startedMu.started {
