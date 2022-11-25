@@ -18,9 +18,9 @@ import (
 
 // Your servers must implement servergroup.Server interface:
 //
-//	type Server interface {
-//	   Start(context.Context) error
-//	}
+// type Server interface {
+//    Start(context.Context) error
+// }
 var (
 	_ servergroup.Server = (*server1)(nil)
 	_ servergroup.Server = (*server2)(nil)
