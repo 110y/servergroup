@@ -33,6 +33,7 @@ type Group struct {
 func (g *Group) Add(s Server) {
 	g.startedMu.RLock()
 	if g.startedMu.started {
+		g.startedMu.RUnlock()
 		return
 	}
 	g.startedMu.RUnlock()
