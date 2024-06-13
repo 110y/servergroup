@@ -7,8 +7,14 @@ import (
 	"testing"
 	"time"
 
+	"go.uber.org/goleak"
+
 	"github.com/110y/servergroup"
 )
+
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m)
+}
 
 func TestGroup(t *testing.T) {
 	t.Parallel()
@@ -33,7 +39,7 @@ func TestGroup(t *testing.T) {
 		return nil
 	}
 
-	stop := func(ctx context.Context) error {
+	stop := func(_ context.Context) error {
 		return nil
 	}
 
@@ -93,7 +99,7 @@ func TestGroupErrorStop(t *testing.T) {
 			<-ctx.Done()
 			return nil
 		},
-		stop: func(ctx context.Context) error {
+		stop: func(_ context.Context) error {
 			return errors.New("failed to stop server")
 		},
 	}
