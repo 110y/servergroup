@@ -164,5 +164,5 @@ func (g *Group) stop(ctx context.Context) error {
 
 	wg.Wait()
 
-	return joinErrors(errMu.errs...)
+	return errors.Join(errMu.errs...)
 }
