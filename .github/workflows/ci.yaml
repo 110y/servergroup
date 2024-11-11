@@ -10,17 +10,18 @@ jobs:
   test:
     permissions:
       contents: 'read'
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
 
     strategy:
       matrix:
         version:
           - 1.20.14
-          - 1.21.11
-          - 1.22.4
+          - 1.21.13
+          - 1.22.9
+          - 1.23.3
 
     steps:
-      - uses: actions/checkout@v4.1.1
+      - uses: actions/checkout@v4.2.2
 
       - name: Test
         run: |
